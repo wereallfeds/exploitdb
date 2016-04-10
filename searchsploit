@@ -1,0 +1,264 @@
+#!/bin/bash
+#       Name: searchsploit - Exploit-DB's CLI search tool
+#    Version: 3.1  (Release date: 2015-07-08)
+# Written by: Offensive Security, Unix-Ninja & g0tmi1k
+#   Homepage: https://github.com/offensive-security/exploit-database
+
+## NOTE:
+#   Exit code '0' means finished normally
+#   Exit code '1' means finished help screen
+#   Exit code '6' means updated from GitHub
+
+
+## OS settings
+gitpath="/usr/share/exploitdb"
+csvpath="${gitpath}/files.csv"
+
+## Program settings
+gitremote="https://github.com/offensive-security/exploit-database.git"
+progname="$( basename "$0" )"
+
+## Default options
+TAGS=""
+SCASE="tolower"
+VERBOSE=0
+WEBLINK=0
+EDBID=0
+COLOUR='true'
+FILEPATH=1
+
+
+## If files.csv is in the searchsploit path, use that instead
+if [[ -f "$( dirname "$0" )/files.csv" ]]; then
+  csvpath="$( dirname "$0" )/files.csv"
+fi
+
+
+## Usage info
+function usage()
+{
+  echo "  Usage: ${progname} [options] term1 [term2] ... [termN]"
+  echo "Example:"
+  echo "  ${progname} afd windows local"
+  echo "  ${progname} -t oracle windows"
+  echo
+  echo "========="
+  echo " Options "
+  echo "========="
+  echo "   -c, --case     Perform a case-sensitive search (Default is insensitive)."
+  echo "   -h, --help     Show this help screen."
+  echo "   -t, --title    Search just the exploit title (Default is title AND the file's path)."
+  echo "   -u, --update   Update exploit database from git."
+  echo "   -v, --verbose  Verbose output. Title lines are allowed to overflow their columns."
+  echo "   -w, --www      Show URLs to Exploit-DB.com rather than local path."
+  echo "       --colour   Disable colour highlighting."
+  echo "       --id       Display EDB-ID value rather than local path."
+  echo
+  echo "======="
+  echo " Notes "
+  echo "======="
+  echo " * Use any number of search terms, in any order."
+  echo " * Search terms are not case sensitive, and order is irrelevant."
+  echo "   * Use '-c' if you wish to reduce results by case-sensitive searching."
+  echo "* Use '-t' to exclude the file's path to filter the search results."
+  echo "   * Could possibly remove false positives (especially when searching numbers)."
+  echo " * When updating from git or displaying help, search terms will be ignored."
+  echo ""
+  exit 1
+}
+
+## Update database (via GIT)
+function update()
+{
+  cd "${gitpath}/"
+
+  # Make sure a git repo is init before updating
+  if [[ "$( git rev-parse --is-inside-work-tree )" != "true" ]]; then
+    if [[ "$( ls )" = "" ]]; then
+      # If directory is empty, just clone
+      git clone "${gitremote}" .
+    else
+      # If not empty, init and add remote
+      git init >/dev/null
+      git remote add origin "${gitremote}"
+    fi
+  fi
+
+  # Make sure to prep checkout first
+  git checkout -- .
+
+  # Update from git
+  git pull origin master
+
+  # If conflicts, clean and try again
+  if [[ "$?" -ne 0 ]]; then
+    git clean -d -fx ""
+    git pull origin master
+  fi
+
+  echo "[*] Update finished."
+  exit 6
+}
+
+
+## Printing dotted lines in the correct manner
+function drawline()
+{
+  printf "%0.s-" $( eval echo {1..$(( COL1 + 1 ))} )
+  echo -n " "
+  printf "%0.s-" $( eval echo {1..$(( COL2 - 1 ))} )
+  echo ""
+}
+
+
+## Check for empty args
+if [[ $# -eq 0 ]]; then
+  usage >&2
+fi
+
+
+## Parse long arguments
+ARGS="-"
+for param in "$@"; do
+  if [[ "${param}" == "--case" ]]; then
+    SCASE=''
+  elif [[ "${param}" == "--help" ]]; then
+    usage >&2
+  elif [[ "${param}" == "--title" ]]; then
+    FILEPATH=0
+  elif [[ "${param}" == "--update" ]]; then
+    update
+  elif [[ "${param}" == "--www" ]]; then
+    WEBLINK=1
+  elif [[ "${param}" == "--verbose" ]]; then
+    VERBOSE=1
+  elif [[ "${param}" == "--colour" ]] || [[ "${param}" == "--color" ]]; then
+    COLOUR=''
+  elif [[ "${param}" == "--id" ]]; then
+    EDBID=1
+  else
+    if [[ "${param:0:1}" == "-" ]]; then
+      ARGS=${ARGS}${param:1}
+      shift
+      continue
+    fi
+    TAGS="${TAGS} ${param}"
+  fi
+done
+
+
+## Parse short arguments
+while getopts "chtuvw" arg "${ARGS}"; do
+  if [[ "${arg}" = "?" ]]; then
+    usage >&2;
+  fi
+  case ${arg} in
+    c) SCASE='';;
+    h) usage >&2;;
+    t) FILEPATH=0;;
+    u) update;;
+    v) VERBOSE=1;;
+    w) WEBLINK=1;;
+  esac
+  shift $(( OPTIND - 1 ))
+done
+
+
+## Dynamically set column widths
+if [[ "${WEBLINK}" -eq '1' ]]; then
+  COL2=45
+else
+  COL2=35
+fi
+COL1=$(( $( tput cols ) - COL2 - 1 ))
+
+
+## Print header
+drawline
+printf "%-${COL1}s %s" " Exploit Title"
+if [[ "${WEBLINK}" -eq '1' ]]; then
+  echo "|  URL"
+elif [[ "${EDBID}" -eq '1' ]]; then
+  echo "|  EDB-ID"
+else
+  echo "|  Path"
+  printf "%-${COL1}s "
+  echo "| (${gitpath}/platforms)"
+fi
+drawline
+
+## Create (AND) search command
+SEARCH=
+for tag in ${TAGS}; do
+
+  if [[ "${COLOUR}" ]]; then
+    COLOUR="${COLOUR}\|${tag}"
+  fi
+
+  if [[ "${FILEPATH}" -eq 1 ]]; then
+    if [[ "${SCASE}" ]]; then
+      SCASE='-i'
+    fi
+
+    if [[ "${SEARCH}" ]]; then
+        SEARCH="${SEARCH} |"
+    fi
+
+    SEARCH="${SEARCH} fgrep ${SCASE} \"${tag}\""
+  else
+    if [[ "${SEARCH}" ]]; then
+      SEARCH="${SEARCH}/ && ${SCASE}(\$1) ~ /"
+    fi
+
+    if [[ "${SCASE}" ]]; then
+      tag="$( echo ${tag} | tr '[:upper:]' '[:lower:]' )"
+    fi
+
+    SEARCH="${SEARCH}${tag}"
+  fi
+done
+
+if [[ "${FILEPATH}" -ne 1 ]]; then
+  SEARCH="awk -F '[|]' '${SCASE}(\$1) ~ /${SEARCH}/ {print}'"
+fi
+
+if [[ "${COLOUR}" ]]; then
+  SEARCH="${SEARCH} | grep --color=always -ie \"\${COLOUR}\""
+fi
+
+
+## Set LANG variable to avoid illegal byte sequence errors
+LANG=C
+
+
+## Search, format, and print results
+if [[ "${VERBOSE}" -eq 0 ]]; then
+  FORMAT=${COL1}'.'${COL1}
+else
+  FORMAT=${COL1}
+fi
+
+
+## Web link format?
+if [[ "${WEBLINK}" -eq '1' ]]; then
+  ## Magic search Fu
+  awk -F "\"*,\"*" '{ printf "%-'${FORMAT}'s | %s\n", $3, "https://www.exploit-db.com/exploits/"$1"/"}' "${csvpath}" \
+    | eval "${SEARCH}"
+elif [[ "${EDBID}" -eq '1' ]]; then
+  ## Magic search Fu
+  awk -F "\"*,\"*" '{ printf "%-'${FORMAT}'s | %s\n", $3, $1}' "${csvpath}" \
+    | eval "${SEARCH}"
+else
+  ## Magic search Fu
+  awk -F "\"*,\"*" '{ printf "%-'${FORMAT}'s | %s\n", $3, $2}' "${csvpath}" \
+    | eval "${SEARCH}" \
+    | sed "s/| platforms/| ./"
+fi
+
+
+## Print footer
+drawline
+
+
+## Done
+exit 0
